@@ -1,9 +1,9 @@
 #!/usr/bin/python
 
-from gdds.oauth import auth
+from gdds import settings
+from gdds.gdds.oauth import auth
 from gdata.docs import client
-from gdds.initialize import Initialize
-import settings
+from gdds.gdds.initialize import Initialize
 from sys import argv
 
 OAuth = auth()

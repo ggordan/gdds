@@ -1,6 +1,6 @@
-from settings import SYNC_DIRECTORY, DATABASE_NAME
+from gdds.settings import SYNC_DIRECTORY, DATABASE_NAME
 from os import path, stat, mkdir, remove
-from gdds.database import Database as db
+from gdds.gdds.database import Database as db
 import re
 from sys import exit
 from time import sleep
@@ -35,17 +35,13 @@ class Initialize(object):
                 'title' : self.resource.title.text,
                 'location' : '',
                 'type' : 'folder',
-                'ino' : ''
+                'ino' : '',
+                'parent' : self.get_parent(self.resource),
+                'parent_ino' : self.get_parent_ino(self.get_parent(self.resource))
             }
 
-            # get parent key
-            self.parent_key = "" if not self.resource.InCollections() else \
-            re.search("(folder%3.*)", self.resource.InCollections()[0].href.strip()).group(0).replace("%3A", ":")
-            data['parent'] = self.parent_key
-            data['parent_ino'] = self.get_parent_ino(self.parent_key)
-
             # if the document has no parent, set file path to root directory
-            if self.parent_key == "":
+            if data['parent'] == "":
                 self.file_path = SYNC_DIRECTORY + self.resource.title.text + "/"
                 data['location'] = self.file_path
 
@@ -53,23 +49,22 @@ class Initialize(object):
                 if not path.exists(self.file_path):
                     mkdir(self.file_path)
 
-                # get the new folder inode id
+                # get the new folder inode
                 data['ino'] = stat(self.file_path).st_ino
                 # insert folder reference to database
                 db().insertResource(data)
             else:
-                # update database with parent key, creating a reference only
+                # Insert a reference only to the database for non-root folders
                 db().insertResource(data)
 
-            self.parent_key = ""
             self.file_path = ""
             # Now add all the other folders
 
-        #  Create the rest of the folders in db
+        #  Create the referenced folders (nested)
         while db().getRest():
-            upd_data = {} # stores the k/v data to be updated
-            for row in db().getRest():
+            upd_data = {} # reset update data
 
+            for row in db().getRest():
                 upd_data['location'] = self.get_location(row[0], row[1])
 
                 if not path.exists(upd_data['location']):
@@ -85,56 +80,52 @@ class Initialize(object):
         from os.path import getmtime
 
         for document in documents.entry:
-
             sleep(1)
 
+            # check if the document has slashes in its name
             doctype = re.search("(\w*(?=:))", document.resource_id.text).group(0)
 
-            data = {
-                'id' : document.resource_id.text,
-                'title' : document.title.text,
-                'modified' : document.updated.text,
-                'type' : doctype,
-                'location' : ''
-            }
+            # add functionality for tables later on
+            if doctype != "table":
 
-            # get parent key
-            self.parent_key = "" if not document.InCollections() else \
-            re.search("(folder%3.*)", document.InCollections()[0].href.strip()).group(0).replace("%3A", ":")
-            data['parent'] = self.parent_key
-            data['parent_ino'] = self.get_parent_ino(self.parent_key)
+                data = {
+                    'id' : document.resource_id.text,
+                    'title' : document.title.text,
+                    'modified' : document.updated.text,
+                    'type' : doctype,
+                    'location' : '',
+                    'parent' : self.get_parent(document),
+                    'parent_ino' : self.get_parent_ino(self.get_parent(self.resource))
+                }
 
-            fileExtension = self.fileType(doctype)            # Check if the spreadsheet has a parent
-            if document.InCollections():
+                fileExtension = self.fileType(doctype)
 
-                print document.title.text
+                if document.InCollections():
 
-                fileLocation = db().getLocation(self.parent_key)[3] + str(document.title.text).replace("/", "--") +  fileExtension
+                    fileLocation = db().getLocation(data['parent'])[3] + unicode(document.title.text).replace('/', '\\') +  fileExtension
 
-                if not path.exists(fileLocation):
+                    if not path.exists(fileLocation):
+                        if self.fileType(doctype) != "":
+                            self.client.DownloadResource(document, fileLocation, \
+                                extra_params={'exportFormat': fileExtension[1:]})
+                        else:
+                            self.client.DownloadResource(document, fileLocation)
+
+                    data['ino'] = stat(fileLocation).st_ino
+                    data['local_modified'] = int(getmtime(fileLocation))
+                    db().insertResource(data)
+                else:
+                    fileLocation = SYNC_DIRECTORY + unicode(document.title.text).replace('/', '\\') + fileExtension
+
                     if self.fileType(doctype) != "":
                         self.client.DownloadResource(document, fileLocation, \
                             extra_params={'exportFormat': fileExtension[1:]})
                     else:
                         self.client.DownloadResource(document, fileLocation)
 
-                data['ino'] = stat(fileLocation).st_ino
-                data['local_modified'] = int(getmtime(fileLocation))
-                db().insertResource(data)
-            else:
-                fileLocation = SYNC_DIRECTORY + str(document.title.text).replace("/", "--") + fileExtension
-
-                if self.fileType(doctype) != "":
-                    self.client.DownloadResource(document, fileLocation, \
-                        extra_params={'exportFormat': fileExtension[1:]})
-                else:
-                    self.client.DownloadResource(document, fileLocation)
-
-                data['ino'] = stat(fileLocation).st_ino
-                data['local_modified'] = int(getmtime(fileLocation))
-                db().insertResource(data)
-
-            self.parent_key = ""
+                    data['ino'] = stat(fileLocation).st_ino
+                    data['local_modified'] = int(getmtime(fileLocation))
+                    db().insertResource(data)
 
     def fileType(self, type):
         try:
@@ -146,18 +137,20 @@ class Initialize(object):
         except KeyError as NotInIndex:
             return ""
 
-    def get_parent_ino(self, parent_key):
+    def get_parent(self, resource):
+        if resource.InCollections():
+            return re.search(self.q_string, resource.InCollections()[0].href.strip()).group(0).replace("%3A", ":")
+        else: return ""
 
+    def get_parent_ino(self, parent_key):
         file_location = self.get_location(parent_key, "")
         if path.exists(file_location):
             return stat(file_location).st_ino
         else: return ""
 
     def _env_check(self):
-
         if path.exists(DATABASE_NAME):
             remove(DATABASE_NAME)
-
         return False
 
     def get_location(self, id, resource_title):

@@ -1,5 +1,13 @@
 import sqlite3
-from settings import DATABASE_NAME
+from gdds.settings import DATABASE_NAME
+
+GET_REST_SQL = '''
+SELECT * FROM tables
+WHERE parent != ""
+AND type = "folder"
+AND location = ""
+AND parent NOT IN(SELECT id from tables WHERE location = "")
+'''
 
 FOLDER_STRUCTURE = '''
 CREATE TABLE IF NOT EXISTS tables (
@@ -53,18 +61,18 @@ class Database(object):
         t = tuple(sql[0])
         status = self.cursor.execute(sql[1], t)
         self.connection.commit()
-        #print self.cursor.rowcount
 
     def getRest(self):
         """
         """
-        status = self.cursor.execute('SELECT * FROM tables WHERE parent != "" AND type = "folder" AND location = "" AND parent NOT IN(SELECT id from tables WHERE location = "")').fetchall()
+        status = self.cursor.execute(GET_REST_SQL).fetchall()
         return status
 
     def getLocation(self, id):
         """
         """
         status = self.cursor.execute('SELECT * FROM tables where id = ?', (id,)).fetchone()
+        print status
         return status
 
     def getDetails(self, detail, key):
@@ -142,6 +150,4 @@ class Database(object):
             return r
 
     def __del__(self):
-        """
-        """
         self.cursor.close()

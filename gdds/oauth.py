@@ -1,4 +1,4 @@
-import settings
+from gdds import settings
 import gdata.gauth
 import webbrowser
 from time import sleep
@@ -20,6 +20,7 @@ def auth():
         if not settings.REFRESH_TOKEN:
 
             authenticated = False
+            print settings.REFRESH_TOKEN
 
             OAuth = gdata.gauth.OAuth2Token(
                 client_id=settings.CONSUMER_KEY,
@@ -62,16 +63,16 @@ def auth():
                 refresh_token=settings.REFRESH_TOKEN
             )
 
-            # Initialise the application
-            client = gdata.docs.client.DocsClient(source=settings.USER_AGENT)
-            client.api_version = "3"
-            client.ssl = True
-            OAuth.authorize(client)
+        # Initialise the application
+        client = gdata.docs.client.DocsClient(source=settings.USER_AGENT)
+        client.api_version = "3"
+        client.ssl = True
+        OAuth.authorize(client)
 
-            try:
-                client.GetResources(limit=1)
-            except gdata.client.RequestError:
-                settings.REFRESH_TOKEN = False
-                print " \n Your token has expired, you need to reauthorize the app. \n"
+        try:
+            client.GetResources(limit=1)
+        except gdata.client.RequestError:
+            settings.REFRESH_TOKEN = False
+            print " \n Your token has expired, you need to reauthorize the app. \n"
 
         return OAuth
