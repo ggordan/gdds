@@ -4,6 +4,7 @@ from gdds import settings
 from gdds.gdds.oauth import auth
 from gdata.docs import client
 from gdds.gdds.initialize import Initialize
+from gdds.gdds.update import Update
 from sys import argv
 
 OAuth = auth()
@@ -21,3 +22,7 @@ if OAuth:
 if len(argv) == 2:
     if argv[1] == "init":
         Initialize(client=client).Start()
+    elif argv[1] == "update":
+        Update(client=client)
+    else:
+        print "You're doing it wrong"
