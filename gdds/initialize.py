@@ -2,7 +2,6 @@ from gdds.settings import SYNC_DIRECTORY, DATABASE_NAME
 from os import path, stat, mkdir, remove
 from gdds.gdds.database import Database as db
 import re
-from sys import exit
 from time import sleep
 
 class Initialize(object):

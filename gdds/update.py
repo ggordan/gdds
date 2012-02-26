@@ -1,8 +1,7 @@
-import random
 import shutil
 import gdata
 from os import path, rename, mkdir, stat, walk
-from re import search
+import re
 from time import sleep
 from gdds.settings import SYNC_DIRECTORY
 from gdds.gdds.database import Database as db
@@ -11,6 +10,7 @@ from shutil import move
 
 class Update(object):
 
+    q_string = "(folder%3.*)"
     tmpdir = "/tmp/"
     moved_to_tmp = False
     parent_directory = None
@@ -22,6 +22,120 @@ class Update(object):
         self._update_folders()
         exit()
         self._update_files()
+
+    def _update_folders(self):
+
+        duplicates = []
+
+        folders = self.client.GetResources(uri='/feeds/default/private/full/-/folder')
+
+        # Iterate through all folders ( All items are Resource objects )
+        for resource in folders.entry:
+
+            print "Checking Folder: %s" % resource.title.text
+
+            # If a folder is a reference only, it means its parent doesn't exist locally yet
+            reference_only, insert_reference = False, False
+
+            # get the local data for folder
+            local_data = db().getDetails("*", resource.resource_id.text)
+
+            # Set the folder parent if one exists
+            self.parent_key = self.get_parent(resource)
+
+            # data to be inserted/updated
+            data = {
+                "id" : resource.resource_id.text,
+                "title" : resource.title.text,
+                "parent" : self.parent_key,
+                "type" : "folder",
+                "location" : ""
+            }
+
+            # if the folder exists locally
+            if local_data:
+
+                print "Folder exists locally"
+
+                # check whether the folder has moved directories/changed name
+                parent_changed = True if self.parent_key != local_data[2] else False
+                title_changed = True if resource.title.text != local_data[1] else False
+
+                print parent_changed, title_changed
+
+                # if any changes were made to a file
+                if parent_changed or title_changed:
+
+                    print "Making changes to folder"
+
+                    prev_location = self.get_location(local_data[2], local_data[1])
+                    new_parent_location = self.get_location(self.parent_key, "")
+
+                    print new_parent_location, prev_location
+
+                    # check whether to only create a reference
+                    if new_parent_location and self.parent_key != "":
+                        try:
+                            if path.exists(prev_location):
+                                move(prev_location, new_parent_location)
+                            sleep(4)
+                        except shutil.Error as E:
+                            print E
+                            exit()
+
+                    db().updateResource(resource.resource_id.text, data)
+            else:
+                # Create the new folders
+                print "Creating new folder: %s" % resource.title.text
+                self.file_path = self.get_location(self.parent_key, resource.title.text, files=True)
+                parentAlive = db().getDetails("location", self.parent_key)
+
+                if self.parent_key != "":
+                    if not parentAlive:
+                        reference_only = True
+                        self.file_path = ""
+                    else:
+                        if parentAlive[0] == "":
+                            reference_only = True
+                            self.file_path = ""
+
+                print "File location: '%s'" % self.file_path
+
+                if not reference_only:
+                    if not path.exists(self.file_path):
+                        mkdir(self.file_path)
+                        data['location'] = self.file_path
+                        data['ino'] = stat(self.file_path).st_ino
+                        data['parent_ino'] = self.get_parent_ino(self.parent_key)
+                        db().insertResource(data)
+                    else:
+                        duplicates.append(resource)
+                        continue
+                else:
+                    # update database with parent key
+                    data['location'] = ""
+                    db().insertResource(data)
+
+            self.parent_key = ""
+            self.file_path = ""
+            print "--------------------------------"
+
+        # handle the duplicates
+        print duplicates
+
+        #  Create the rest of the folders in db
+        while db().getRest():
+            upd_data = {} # stores the k/v data to be updated
+            for row in db().getRest():
+
+                upd_data['location'] = self.get_location(row[0], row[1])
+
+                if not path.exists(upd_data['location']):
+                    mkdir(upd_data['location'])
+
+                upd_data['ino'] = stat(upd_data['location']).st_ino
+                upd_data['parent_ino'] = self.get_parent_ino(row[2])
+                db().updateResource(row[0], upd_data)
 
     def _update_files(self):
 
@@ -126,131 +240,13 @@ class Update(object):
                             print "offline version is newer"
             sleep(1)
 
-    def _update_folders(self):
-        """
-        """
-
-        # upload newly created local folders
-        self._upload_folders()
-
-        # delete locally removed folders
-        #self._delete_folders()
-        #sleep(1)
-
-        # Fetch all the 'collections' from Google Documents
-        folders = self.client.GetResources(uri='/feeds/default/private/full/-/folder')
-
-        # Iterate through all folders ( All items are Resource objects )
-        for resource in folders.entry:
-
-            print "-------------------------------------------------------------"
-            print "Checking Folder: %s" % resource.title.text
-            # If a folder is a reference only, it means its parent doesn't exist locally yet
-            reference_only, resource_changed, insert_reference = False, False, False
-
-            # get the local data for folder
-            localData = db().getDetails("*", resource.resource_id.text)
-
-            # Set the folder parent if one exists
-            self.parent_key = "" if not resource.InCollections() else \
-            search("(folder%3.*)", resource.InCollections()[0].href.strip()).group(0).replace("%3A", ":")
-
-            #print "Location parent: %s \n\n" % self.get_location(resource.resource_id.text, resource.title.text)
-
-            # data to be inserted/updated
-            data = {
-                "id" : resource.resource_id.text,
-                "title" : resource.title.text,
-                "parent" : self.parent_key,
-                "type" : "folder",
-            }
-
-            # if the folder exists locally
-            if localData:
-
-                print "Folder '%s' exists locally" % data['title']
-
-                # check whether the folder has moved directories/changed name
-                parent_changed = True if self.parent_key != localData[2] else False
-                title_change = True if resource.title.text != localData[1] else False
-
-                # if any changes were made to a file
-                if parent_changed or title_change:
-
-                    oldLocation = self.get_location(localData[2], localData[1])
-                    locationParent = self.get_location(self.parent_key, "")
-                    print oldLocation
-                    print locationParent
-                    # check whether to only create a reference
-
-                    if not locationParent and self.parent_key != "":
-                        reference_only = True
-                        data['location'] = ""
-                    else:
-                        data['location'] = resource.title.text
-
-                    if not reference_only:
-                        try:
-                            move(oldLocation, locationParent)
-                        except shutil.Error as E:
-                            print E
-                            pass
-
-                    db().updateResource(resource.resource_id.text, data)
-            else:
-                # Create the new folders
-                self.file_path = self.get_location(self.parent_key, resource.title.text, files=True)
-                parentAlive = db().getDetails("location", self.parent_key)
-
-                if self.parent_key != "":
-                    if not parentAlive:
-                        reference_only = True
-                        self.file_path = ""
-                    else:
-                        if parentAlive[0] == "":
-                            reference_only = True
-                            self.file_path = ""
-
-                print "File location: '%s'" % self.file_path
-
-                if not reference_only:
-                    if not path.exists(self.file_path):
-                        mkdir(self.file_path)
-
-                    data['location'] = self.file_path
-                    data['ino'] = stat(self.file_path).st_ino
-                    data['parent_ino'] = self.get_parent_ino(self.parent_key)
-                    db().insertResource(data)
-                else:
-                    # update database with parent key
-                    data['location'] = ""
-                    db().insertResource(data)
-
-            self.parent_key = ""
-            self.file_path = ""
-
-        #  Create the rest of the folders in db
-        while db().getRest():
-            upd_data = {} # stores the k/v data to be updated
-            for row in db().getRest():
-
-                upd_data['location'] = self.get_location(row[0], row[1])
-
-                if not path.exists(upd_data['location']):
-                    mkdir(upd_data['location'])
-
-                upd_data['ino'] = stat(upd_data['location']).st_ino
-                upd_data['parent_ino'] = self.get_parent_ino(row[2])
-                db().updateResource(row[0], upd_data)
-
     def get_location(self, id, resource_title, files=False):
 
         if id=="":
-            return SYNC_DIRECTORY + "%s/" % resource_title
+            return path.join(SYNC_DIRECTORY, resource_title)
         else:
             location = []
             docDetail = db().getDetails("parent, title", id)
-
             if docDetail:
                 if files:
                     location.append(docDetail[1])
@@ -262,10 +258,7 @@ class Update(object):
             else:
                 return ""
 
-            print location
-
-            return SYNC_DIRECTORY + "/".join(location[::-1]) + "/%s/" % resource_title
-
+            return path.join(SYNC_DIRECTORY, "/".join(location[::-1]), resource_title)
 
     def _delete_folders(self):
         """
@@ -306,7 +299,6 @@ class Update(object):
     def _upload_folders(self):
         """
         """
-
         from gdata.docs import data as gd
         lst = self._get_all_folders()
 
@@ -502,12 +494,13 @@ class Update(object):
         """
 
     def UploadWithExponentialBackoff(self, entry):
+        from random import randint
         for n in range(0, 5):
             try:
                 response = self.client.GetResources()
                 return response
             except:
-                sleep((2 ** n) + (random.randint(0, 1000) / 1000))
+                sleep((2 ** n) + (randint(0, 1000) / 1000))
         return None
 
     def _get_all_folders(self):
@@ -561,3 +554,14 @@ class Update(object):
                 }[type]
         except KeyError as NotInIndex:
             return None
+
+    def get_parent(self, resource):
+        if resource.InCollections():
+            return re.search(self.q_string, resource.InCollections()[0].href.strip()).group(0).replace("%3A", ":")
+        else: return ""
+
+    def get_parent_ino(self, parent_key):
+        file_location = self.get_location(parent_key, "")
+        if path.exists(file_location):
+            return stat(file_location).st_ino
+        else: return ""
